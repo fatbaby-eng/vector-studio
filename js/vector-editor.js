@@ -82,7 +82,7 @@ const Utils = {
     tool: 'select',
     layers: [],
     activeLayerId: null,
-    selection: [],
+    selection: [], selectedPoints: [],
     zoom: 1, panX: 0, panY: 0,
     artboard: { x: 0, y: 0, width: 800, height: 600 },
     showGrid: false,
@@ -353,7 +353,7 @@ const Utils = {
           ctx.beginPath(); ctx.arc(hout.x, hout.y, 4, 0, Math.PI*2); ctx.fill(); ctx.stroke();
         }
 
-        ctx.fillStyle = '#fff';
+        ctx.fillStyle = (state.selectedPoints && state.selectedPoints.includes(pts.indexOf(p))) ? '#22c55e' : '#fff';
         ctx.fillRect(sp.x - 4, sp.y - 4, 8, 8);
         ctx.strokeRect(sp.x - 4, sp.y - 4, 8, 8);
       });
@@ -390,6 +390,35 @@ const Utils = {
     }
   }
 
+
+  function convertToPath(o) {
+    if (o.type === 'path' || o.type === 'polygon' || o.type === 'group') return;
+    const b = Utils.getObjectBounds(o);
+    if (!b) return;
+    const pts = [];
+    if (o.type === 'rect') {
+      pts.push({ x: b.x, y: b.y });
+      pts.push({ x: b.x + b.width, y: b.y });
+      pts.push({ x: b.x + b.width, y: b.y + b.height });
+      pts.push({ x: b.x, y: b.y + b.height });
+    } else if (o.type === 'ellipse') {
+      const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+      const rx = b.width / 2, ry = b.height / 2;
+      const kappa = 0.5522848;
+      const ox = rx * kappa, oy = ry * kappa;
+      pts.push({ x: cx, y: cy - ry, handleIn: { x: -ox, y: 0 }, handleOut: { x: ox, y: 0 } });
+      pts.push({ x: cx + rx, y: cy, handleIn: { x: 0, y: -oy }, handleOut: { x: 0, y: oy } });
+      pts.push({ x: cx, y: cy + ry, handleIn: { x: ox, y: 0 }, handleOut: { x: -ox, y: 0 } });
+      pts.push({ x: cx - rx, y: cy, handleIn: { x: 0, y: oy }, handleOut: { x: 0, y: -oy } });
+    } else if (o.type === 'line') {
+      pts.push({ x: o.x1, y: o.y1 });
+      pts.push({ x: o.x2, y: o.y2 });
+    }
+    o.type = 'path';
+    o.points = pts;
+    o.closed = (o.type !== 'line');
+  }
+
   function hitHandle(screenPt) {
     const b = combinedBounds();
     if (!b) return null;
@@ -398,6 +427,11 @@ const Utils = {
     for (const k of HANDLES) {
       const p = w2s(pos[k]);
       if (Math.abs(screenPt.x - p.x) <= tol && Math.abs(screenPt.y - p.y) <= tol) return k;
+    }
+    const rotateTol = 20;
+    for (const k of ['nw', 'ne', 'se', 'sw']) {
+      const p = w2s(pos[k]);
+      if (Math.abs(screenPt.x - p.x) <= rotateTol && Math.abs(screenPt.y - p.y) <= rotateTol) return 'rotate-' + k;
     }
     return null;
   }
@@ -772,8 +806,10 @@ const Utils = {
 
     if (tool === 'pen') {
       if (!penPoints) {
-        if (state.selection.length === 1 && (state.selection[0].type === 'path' || state.selection[0].type === 'polygon')) {
+        if (state.selection.length === 1) {
           const o = state.selection[0];
+          convertToPath(o);
+          if (o.type === 'path' || o.type === 'polygon') {
           const pts = o.points || [];
           const pIndex = pts.findIndex(p => Utils.dist(wp, p) < 5 / state.zoom);
           if (pIndex !== -1) {
@@ -848,6 +884,7 @@ const Utils = {
     const deep = tool === 'directSelect';
     if ((tool === 'directSelect' || tool === 'convert') && state.selection.length === 1) {
       const o = state.selection[0];
+      if (tool === 'convert' || tool === 'pen') convertToPath(o);
       const pts = o.points || (o.type === 'line' ? [{x:o.x1, y:o.y1}, {x:o.x2, y:o.y2}] : []);
       
       // check bezier handles
@@ -873,7 +910,17 @@ const Utils = {
             snapshot(); return;
           }
         }
-        drag = { mode: 'edit-point', object: o, index: pIndex, startWorld: wp };
+        if (tool === 'directSelect') {
+          if (e.shiftKey) {
+            if (state.selectedPoints.includes(pIndex)) state.selectedPoints = state.selectedPoints.filter(i => i !== pIndex);
+            else state.selectedPoints.push(pIndex);
+          } else {
+            if (!state.selectedPoints.includes(pIndex)) state.selectedPoints = [pIndex];
+          }
+          drag = { mode: 'edit-point', object: o, startWorld: wp, origPoints: JSON.parse(JSON.stringify(o.points)) };
+        } else {
+          drag = { mode: 'edit-point', object: o, index: pIndex, startWorld: wp };
+        }
         snapshot();
         return;
       }
@@ -881,7 +928,14 @@ const Utils = {
     
     const handle = hitHandle(sp);
     if (handle && state.selection.length) {
-      drag = { mode: 'resize', handle, origBounds: combinedBounds(), origSel: structuredClone(state.selection) };
+      if (handle.startsWith('rotate-')) {
+        const b = combinedBounds();
+        const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+        const startAng = Math.atan2(wp.y - cy, wp.x - cx);
+        drag = { mode: 'rotate', origSel: structuredClone(state.selection), center: {x: cx, y: cy}, startAng };
+      } else {
+        drag = { mode: 'resize', handle, origBounds: combinedBounds(), origSel: structuredClone(state.selection) };
+      }
       snapshot();
       return;
     }
@@ -891,12 +945,12 @@ const Utils = {
         const i = state.selection.indexOf(hit.object);
         if (i >= 0) state.selection.splice(i, 1); else state.selection.push(hit.object);
       } else if (!state.selection.includes(hit.object)) {
-        state.selection = [hit.object];
+        state.selection = [hit.object]; state.selectedPoints = [];
       }
       drag = { mode: 'maybe-move', startWorld: wp, moved: false };
       updatePanels(); render();
     } else {
-      if (!e.shiftKey) state.selection = [];
+      if (!e.shiftKey) state.selection = []; state.selectedPoints = [];
       drag = { mode: 'marquee', startWorld: wp, current: wp };
       updatePanels(); render();
     }
@@ -906,7 +960,24 @@ const Utils = {
     const sp = Utils.getMousePos(canvas, e);
     const wp = s2w(sp);
     if (penPoints) { penMouse = wp; render(); }
-    if (!drag) return;
+    
+    if (!drag) {
+      if (state.selection.length && (state.tool === 'select')) {
+        const h = hitHandle(sp);
+        if (h) {
+          if (h.startsWith('rotate-')) canvas.style.cursor = 'alias';
+          else if (['nw', 'se'].includes(h)) canvas.style.cursor = 'nwse-resize';
+          else if (['ne', 'sw'].includes(h)) canvas.style.cursor = 'nesw-resize';
+          else if (['n', 's'].includes(h)) canvas.style.cursor = 'ns-resize';
+          else if (['e', 'w'].includes(h)) canvas.style.cursor = 'ew-resize';
+        } else {
+          canvas.style.cursor = hitTest(wp, false) ? 'move' : 'default';
+        }
+      } else if (state.tool === 'directSelect') {
+         canvas.style.cursor = 'default';
+      }
+      return;
+    }
 
     switch (drag.mode) {
       case 'pan':
@@ -939,6 +1010,19 @@ const Utils = {
       }
       case 'marquee':
         drag.current = wp; render(); break;
+      case 'rotate': {
+        const ang = Math.atan2(wp.y - drag.center.y, wp.x - drag.center.x);
+        let deg = (ang - drag.startAng) * 180 / Math.PI;
+        if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+        
+        drag.origSel.forEach((orig, i) => {
+          const live = state.selection[i];
+          copyGeometry(orig, live);
+          live.rotation = ((orig.rotation || 0) + deg) % 360;
+        });
+        updatePanels(); render();
+        break;
+      }
       case 'resize': {
         const b = drag.origBounds;
         const nb = { x: b.x, y: b.y, width: b.width, height: b.height };
@@ -974,11 +1058,19 @@ const Utils = {
         if (drag.object.type === 'line') {
           if (drag.index === 0) { drag.object.x1 += dx; drag.object.y1 += dy; }
           else { drag.object.x2 += dx; drag.object.y2 += dy; }
+          drag.startWorld = wp;
         } else if (drag.object.points) {
-          drag.object.points[drag.index].x += dx;
-          drag.object.points[drag.index].y += dy;
+          if (drag.origPoints && state.selectedPoints.length > 0) {
+            state.selectedPoints.forEach(i => {
+              drag.object.points[i].x = drag.origPoints[i].x + dx;
+              drag.object.points[i].y = drag.origPoints[i].y + dy;
+            });
+          } else {
+            drag.object.points[drag.index].x += dx;
+            drag.object.points[drag.index].y += dy;
+            drag.startWorld = wp;
+          }
         }
-        drag.startWorld = wp;
         updatePanels(); render();
         break;
       }
@@ -1089,13 +1181,36 @@ const Utils = {
             if (b.x < r.x + r.width && b.x + b.width > r.x && b.y < r.y + r.height && b.y + b.height > r.y) hits.push(o);
           });
         });
-        if (hits.length) state.selection = e.shiftKey ? [...new Set([...state.selection, ...hits])] : hits;
+        if (state.tool === 'directSelect' && state.selection.length === 1 && state.selection[0].points) {
+          const o = state.selection[0];
+          const pointHits = [];
+          o.points.forEach((p, i) => {
+            if (p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height) pointHits.push(i);
+          });
+          if (pointHits.length) state.selectedPoints = e.shiftKey ? [...new Set([...state.selectedPoints, ...pointHits])] : pointHits;
+          else if (!e.shiftKey) state.selectedPoints = [];
+        } else {
+          if (hits.length) state.selection = e.shiftKey ? [...new Set([...state.selection, ...hits])] : hits;
+        }
         updatePanels(); render();
         break;
       }
       case 'maybe-move':
         if (drag.moved) { renderLayersPanel(); updatePanels(); }
         break;
+      case 'rotate': {
+        const ang = Math.atan2(wp.y - drag.center.y, wp.x - drag.center.x);
+        let deg = (ang - drag.startAng) * 180 / Math.PI;
+        if (e.shiftKey) deg = Math.round(deg / 15) * 15;
+        
+        drag.origSel.forEach((orig, i) => {
+          const live = state.selection[i];
+          copyGeometry(orig, live);
+          live.rotation = ((orig.rotation || 0) + deg) % 360;
+        });
+        updatePanels(); render();
+        break;
+      }
       case 'resize': 
       case 'edit-point':
       case 'drag-bezier':
