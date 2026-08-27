@@ -885,6 +885,7 @@ const Utils = {
             render();
             return;
           }
+          }
         }
         penPoints = [wp];
       }
