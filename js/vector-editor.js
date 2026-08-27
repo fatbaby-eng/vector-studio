@@ -66,6 +66,7 @@ const Utils = {
       if (minX === Infinity) return { x: obj.x || 0, y: obj.y || 0, width: 0, height: 0 };
       return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
     }
+    if (obj.type === 'text') return { x: obj.xLeft !== undefined ? obj.xLeft : obj.x, y: obj.yTop !== undefined ? obj.yTop : obj.y, width: obj.width || 0, height: obj.height || 0 };
     return { x: obj.x, y: obj.y, width: obj.width || 0, height: obj.height || 0 };
   }
 };
@@ -243,8 +244,14 @@ const Utils = {
         const weight = o.fontWeight || 'normal', size = o.fontSize || 24, fam = o.fontFamily || 'DM Sans';
         ctx.font = `${weight} ${size}px ${fam}`;
         ctx.textBaseline = 'alphabetic';
-        if (o.fill && o.fill !== 'none') { ctx.fillStyle = o.fill; ctx.fillText(o.text || '', o.x, o.y); }
-        if (o.stroke && o.stroke !== 'none') { ctx.strokeStyle = o.stroke; ctx.strokeText(o.text || '', o.x, o.y); }
+        ctx.textAlign = o.textAlign || 'left';
+        const lines = (o.text || '').split('\n');
+        const lh = size * (o.lineHeight || 1.2);
+        for (let i = 0; i < lines.length; i++) {
+          const ly = o.y + i * lh;
+          if (o.fill && o.fill !== 'none') { ctx.fillStyle = o.fill; ctx.fillText(lines[i], o.x, ly); }
+          if (o.stroke && o.stroke !== 'none') { ctx.strokeStyle = o.stroke; ctx.strokeText(lines[i], o.x, ly); }
+        }
         break;
       }
       case 'group':
@@ -473,7 +480,10 @@ const Utils = {
     if (o.type === 'line') { o.x1 += dx; o.y1 += dy; o.x2 += dx; o.y2 += dy; }
     else if ((o.type === 'path' || o.type === 'polygon') && o.points) o.points.forEach(p => { p.x += dx; p.y += dy; });
     else if (o.type === 'group') o.children.forEach(c => moveObject(c, dx, dy));
-    else { o.x += dx; o.y += dy; }
+    else { 
+      o.x += dx; o.y += dy; 
+      if (o.type === 'text') measureText(o);
+    }
   }
 
   function scaleObject(o, oldB, newB) {
@@ -496,7 +506,7 @@ const Utils = {
       const p = map({ x: o.x, y: o.y });
       o.x = p.x; o.y = p.y;
       o.width = (o.width || 0) * sx; o.height = (o.height || 0) * sy;
-      if (o.type === 'text' && o.fontSize) o.fontSize = Math.max(1, o.fontSize * sy);
+      if (o.type === 'text' && o.fontSize) { o.fontSize = Math.max(1, o.fontSize * sy); measureText(o); }
     }
   }
 
@@ -568,6 +578,9 @@ const Utils = {
       $('prop-font').value = first.fontFamily || 'DM Sans';
       setVal('prop-font-size', first.fontSize || 24);
       $('prop-font-weight').value = first.fontWeight || 'normal';
+      if ($('prop-text')) $('prop-text').value = first.text || '';
+      if ($('prop-text-align')) $('prop-text-align').value = first.textAlign || 'left';
+      if ($('prop-line-height')) setVal('prop-line-height', first.lineHeight || 1.2);
     }
   }
 
@@ -590,6 +603,35 @@ const Utils = {
     bindProp('prop-font', (v, o) => { if (o && o.type === 'text') o.fontFamily = v; });
     bindProp('prop-font-size', (v, o) => { if (o && o.type === 'text') { o.fontSize = Math.max(1, parseFloat(v) || 1); measureText(o); } });
     bindProp('prop-font-weight', (v, o) => { if (o && o.type === 'text') o.fontWeight = v; });
+    if ($('prop-text')) bindProp('prop-text', (v, o) => { if (o && o.type === 'text') { o.text = v; measureText(o); } });
+    if ($('prop-text-align')) bindProp('prop-text-align', (v, o) => { if (o && o.type === 'text') { o.textAlign = v; measureText(o); } });
+    if ($('prop-line-height')) bindProp('prop-line-height', (v, o) => { if (o && o.type === 'text') { o.lineHeight = Math.max(0.1, parseFloat(v) || 1.2); measureText(o); } });
+    const alignSel = (type) => {
+      if (!state.selection.length) return;
+      snapshot();
+      const isMulti = state.selection.length > 1;
+      const ref = isMulti ? combinedBounds() : { x: 0, y: 0, width: state.artboard.width, height: state.artboard.height };
+      
+      state.selection.forEach(o => {
+        const b = Utils.getObjectBounds(o);
+        let dx = 0, dy = 0;
+        if (type === 'left') dx = ref.x - b.x;
+        else if (type === 'center') dx = (ref.x + ref.width/2) - (b.x + b.width/2);
+        else if (type === 'right') dx = (ref.x + ref.width) - (b.x + b.width);
+        else if (type === 'top') dy = ref.y - b.y;
+        else if (type === 'middle') dy = (ref.y + ref.height/2) - (b.y + b.height/2);
+        else if (type === 'bottom') dy = (ref.y + ref.height) - (b.y + b.height);
+        moveObject(o, dx, dy);
+      });
+      renderLayersPanel(); updatePanels(); render();
+    };
+    if ($('align-left')) $('align-left').addEventListener('click', () => alignSel('left'));
+    if ($('align-center')) $('align-center').addEventListener('click', () => alignSel('center'));
+    if ($('align-right')) $('align-right').addEventListener('click', () => alignSel('right'));
+    if ($('align-top')) $('align-top').addEventListener('click', () => alignSel('top'));
+    if ($('align-middle')) $('align-middle').addEventListener('click', () => alignSel('middle'));
+    if ($('align-bottom')) $('align-bottom').addEventListener('click', () => alignSel('bottom'));
+
 
     // x/y/w/h move the combined selection
     const bindBox = (id, apply) => {
@@ -609,9 +651,16 @@ const Utils = {
 
   function measureText(o) {
     ctx.font = `${o.fontWeight || 'normal'} ${o.fontSize || 24}px ${o.fontFamily || 'DM Sans'}`;
-    o.width = ctx.measureText(o.text || '').width;
-    o.height = (o.fontSize || 24) * 1.2;
-    // store with y as top for bounds purposes
+    const lines = (o.text || '').split('\n');
+    let maxW = 0;
+    for (const line of lines) maxW = Math.max(maxW, ctx.measureText(line).width);
+    o.width = maxW;
+    const lh = (o.fontSize || 24) * (o.lineHeight || 1.2);
+    o.height = lines.length * lh;
+    
+    // adjust bounds depending on alignment
+    const align = o.textAlign || 'left';
+    o.xLeft = align === 'center' ? o.x - o.width / 2 : (align === 'right' ? o.x - o.width : o.x);
     o.yTop = o.y - (o.fontSize || 24);
   }
 
@@ -855,7 +904,8 @@ const Utils = {
         snapshot();
         const o = Object.assign(baseObject('text'), {
           text: t, x: wp.x, y: wp.y,
-          fontFamily: state.defaults.fontFamily, fontSize: state.defaults.fontSize, fontWeight: state.defaults.fontWeight
+          fontFamily: state.defaults.fontFamily, fontSize: state.defaults.fontSize, fontWeight: state.defaults.fontWeight,
+          textAlign: 'left', lineHeight: 1.2
         });
         measureText(o);
         addObject(o);
