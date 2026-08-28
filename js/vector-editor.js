@@ -1421,6 +1421,21 @@ const Utils = {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 5000);
   }
+
+  function sendToFrameLab() {
+    const a = state.artboard;
+    const body = state.layers.map(l =>
+      `<g id="${esc(l.name)}"${l.visible ? '' : ' display="none"'}>${l.objects.map(objectToSVG).join('')}</g>`
+    ).join('\n  ');
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${a.x} ${a.y} ${a.width} ${a.height}" width="${a.width}" height="${a.height}">\n  ${body}\n</svg>`;
+    
+    // Use localStorage to pass SVG data to Frame Lab Pro seamlessly
+    localStorage.setItem('frameLabImportSVG', svg);
+    
+    // Open Frame Lab Pro
+    window.open('https://fatbaby-eng.github.io/frame-lab-pro/', '_blank');
+  }
+
   function exportPNG() {
     const a = state.artboard, scale = 2;
     const off = document.createElement('canvas');
@@ -1668,6 +1683,7 @@ const Utils = {
       case 'open': $('file-input').click(); break;
       case 'save': saveSVG(); break;
       case 'export': exportPNG(); break;
+      case 'send-framelab': sendToFrameLab(); break;
       case 'export-pdf': exportPDF(); break;
       case 'export-eps': exportEPS(); break;
       case 'undo': undo(); break;
